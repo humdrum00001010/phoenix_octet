@@ -3,6 +3,8 @@ defmodule PhoenixOctet.ChannelTest do
 
   import Phoenix.ChannelTest
 
+  alias PhoenixOctet.Protocol
+
   @endpoint PhoenixOctet.TestEndpoint
 
   setup do
@@ -13,99 +15,27 @@ defmodule PhoenixOctet.ChannelTest do
     %{socket: socket, sink_id: sink_id}
   end
 
-  test "streams begin -> chunks -> commit and delivers via handle_octet", %{socket: socket} do
-    part_one = :crypto.strong_rand_bytes(16)
-    part_two = :crypto.strong_rand_bytes(8)
-    size = byte_size(part_one) + byte_size(part_two)
+  test "one frame uploads, acknowledges, and delivers via handle_octet", %{socket: socket} do
+    bytes = :crypto.strong_rand_bytes(24)
 
-    ref = push(socket, "begin", %{"id" => "up-1", "size" => size})
-    assert_reply ref, :ok
+    ref = push(socket, "upload", {:binary, Protocol.encode_frame("up-1", bytes)})
+    assert_reply ref, :ok, %{bytes: 24}
 
-    # stop-and-wait: every chunk is individually acknowledged (the credit)
-    ref = push(socket, "chunk", {:binary, part_one})
-    assert_reply ref, :ok
-    ref = push(socket, "chunk", {:binary, part_two})
-    assert_reply ref, :ok
-
-    ref = push(socket, "commit", %{"id" => "up-1"})
-    assert_reply ref, :ok, %{bytes: ^size}
-
-    expected = part_one <> part_two
-    assert_receive {:octet_upload, "up-1", ^expected}
+    assert_receive {:octet_upload, "up-1", ^bytes}
   end
 
-  test "rejects a commit whose received bytes miss the declared size", %{socket: socket} do
-    ref = push(socket, "begin", %{"id" => "up-short", "size" => 100})
-    assert_reply ref, :ok
-
-    ref = push(socket, "chunk", {:binary, :crypto.strong_rand_bytes(10)})
-    assert_reply ref, :ok
-
-    ref = push(socket, "commit", %{"id" => "up-short"})
-    assert_reply ref, :error, %{reason: "upload incomplete"}
+  test "enforces the configured max_upload_bytes", %{socket: socket} do
+    # TestChannel is configured with max_upload_bytes: 1024
+    frame = Protocol.encode_frame("huge", :crypto.strong_rand_bytes(2048))
+    ref = push(socket, "upload", {:binary, frame})
+    assert_reply ref, :error, %{reason: "upload too large"}
 
     refute_receive {:octet_upload, _id, _bytes}
   end
 
-  test "rejects chunks beyond the declared size and forgets the transfer", %{socket: socket} do
-    ref = push(socket, "begin", %{"id" => "up-over", "size" => 4})
-    assert_reply ref, :ok
-
-    ref = push(socket, "chunk", {:binary, :crypto.strong_rand_bytes(5)})
-    assert_reply ref, :error, %{reason: "upload exceeded declared size"}
-
-    ref = push(socket, "begin", %{"id" => "up-retry", "size" => 1})
-    assert_reply ref, :ok
-  end
-
-  test "enforces the configured max_upload_bytes and single transfer", %{socket: socket} do
-    # TestChannel is configured with max_upload_bytes: 1024
-    ref = push(socket, "begin", %{"id" => "huge", "size" => 2048})
-    assert_reply ref, :error, %{reason: "upload too large"}
-
-    ref = push(socket, "begin", %{"id" => "a", "size" => 1})
-    assert_reply ref, :ok
-
-    ref = push(socket, "begin", %{"id" => "b", "size" => 1})
-    assert_reply ref, :error, %{reason: "upload already in progress"}
-  end
-
-  test "abort forgets the in-flight transfer and is idempotent", %{socket: socket} do
-    ref = push(socket, "begin", %{"id" => "up-abort", "size" => 10})
-    assert_reply ref, :ok
-
-    ref = push(socket, "abort", %{"id" => "up-abort"})
-    assert_reply ref, :ok
-
-    ref = push(socket, "abort", %{"id" => "up-abort"})
-    assert_reply ref, :ok
-
-    ref = push(socket, "commit", %{"id" => "up-abort"})
-    assert_reply ref, :error, %{reason: "no matching upload"}
-  end
-
-  test "abort orders a terminal cancellation after an already committed upload", %{
-    socket: socket
-  } do
-    id = "up-commit-abort-race"
-    bytes = :crypto.strong_rand_bytes(12)
-
-    ref = push(socket, "begin", %{"id" => id, "size" => byte_size(bytes)})
-    assert_reply ref, :ok
-    ref = push(socket, "chunk", {:binary, bytes})
-    assert_reply ref, :ok
-    ref = push(socket, "commit", %{"id" => id})
-    assert_reply ref, :ok, %{bytes: 12}
-    ref = push(socket, "abort", %{"id" => id})
-    assert_reply ref, :ok
-
-    assert_receive {:octet_upload, ^id, ^bytes}
-    assert_receive {:octet_cancelled, ^id}
-  end
-
-  test "chunks without a begin and unknown events are refused", %{socket: socket} do
-    ref = push(socket, "chunk", {:binary, "stray"})
-    assert_reply ref, :error, %{reason: "no upload in progress"}
+  test "refuses malformed frames and unknown events", %{socket: socket} do
+    ref = push(socket, "upload", {:binary, <<>>})
+    assert_reply ref, :error, %{reason: "invalid octet frame"}
 
     ref = push(socket, "mystery", %{})
     assert_reply ref, :error, %{reason: "unknown octet event"}
@@ -114,5 +44,10 @@ defmodule PhoenixOctet.ChannelTest do
   test "join rejects an empty sink id" do
     {:ok, socket} = connect(PhoenixOctet.TestSocket, %{})
     assert {:error, %{reason: "invalid_sink"}} = subscribe_and_join(socket, "octet:", %{})
+  end
+
+  test "frame codec round-trips" do
+    assert {:ok, "id", "payload"} = Protocol.decode_frame(Protocol.encode_frame("id", "payload"))
+    assert :error = Protocol.decode_frame(<<0, "no-id">>)
   end
 end

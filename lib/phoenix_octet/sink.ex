@@ -1,6 +1,6 @@
 defmodule PhoenixOctet.Sink do
   @moduledoc """
-  The common receiving side: a per-process sink for committed binaries.
+  The common receiving side: a per-process sink for uploaded binaries.
 
   A receiving process (typically a LiveView) mints an unguessable sink id,
   subscribes, and renders the id for the client to join `"octet:<sink-id>"`:
@@ -10,7 +10,7 @@ defmodule PhoenixOctet.Sink do
         {:ok, assign(socket, :octet_sink_id, sink_id)}
       end
 
-      # committed binaries arrive as messages:
+      # uploads arrive as messages:
       def handle_info({:octet_upload, id, bytes}, socket), do: ...
 
   The channel delivers with `deliver/4` from `handle_octet/4`. Binaries over
@@ -37,22 +37,10 @@ defmodule PhoenixOctet.Sink do
     {sink_id, result}
   end
 
-  @doc "Delivers a committed binary to the sink's subscriber."
+  @doc "Delivers an uploaded binary to the sink's subscriber."
   def deliver(pubsub, sink_id, id, bytes)
       when is_binary(sink_id) and is_binary(id) and is_binary(bytes) do
     Phoenix.PubSub.broadcast(pubsub, topic(sink_id), {:octet_upload, id, bytes})
-  end
-
-  @doc """
-  Delivers a terminal cancellation for an upload id.
-
-  Call from `handle_octet_cancelled/3`: running in the channel process orders
-  this after any `deliver/4` for the same id, so a receiver that already
-  stashed the binary can drop it — a commit-abort race never strands bytes.
-  Arrives as `{:octet_cancelled, id}`.
-  """
-  def deliver_cancel(pubsub, sink_id, id) when is_binary(sink_id) and is_binary(id) do
-    Phoenix.PubSub.broadcast(pubsub, topic(sink_id), {:octet_cancelled, id})
   end
 
   @doc "The PubSub topic for a sink id."

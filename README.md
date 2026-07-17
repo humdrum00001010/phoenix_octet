@@ -17,17 +17,26 @@ state, canvas blobs, recorded audio — need the upload semantics without the
 DOM anchor. Asked about inputless uploads, LiveView maintainers point at
 custom channels. This library is that custom channel, written once:
 
-* **Framing**: `begin` (id + declared size) → binary `chunk` frames →
-  `commit`; `abort` is a confirmed, idempotent cancellation.
-* **Flow control**: credit-based stop-and-wait, window size one — the reply
-  to each chunk is the credit for the next, so consumer backpressure reaches
-  the sender. Ordering and reliability stay where they belong (the
-  transport); the ack exists purely for pacing.
-* **Size enforcement**: declared up front, checked per chunk, `commit`
-  accepted only when received == declared.
-* **Lifetime-scoped memory**: chunks accumulate as iodata in the channel
-  process and die with it; delivery to the receiver is a refc-binary
-  reference transfer. No temp files, no sweeper.
+* **Framing**: one binary frame per upload — a length-prefixed id followed
+  by the payload. The push reply is the acknowledgment; an upload either
+  fully happens or fully doesn't, so there is no transfer state and nothing
+  to abort.
+* **Flow control**: one reply per upload; serialize uploads with
+  `createQueue()` for strictly-FIFO-per-owner pacing. Ordering and
+  reliability stay where they belong: the transport.
+* **Size enforcement**: checked server-side against `:max_upload_bytes`;
+  set your socket's `max_frame_size` to match, since a frame is a whole
+  upload.
+* **Lifetime-scoped memory**: delivery to the receiver is a refc-binary
+  reference transfer; anything unconsumed dies with its owner. No temp
+  files, no sweeper.
+
+Earlier versions carried a chunked begin/commit protocol with per-chunk
+credit acknowledgments; on a reliable ordered transport that reintroduced
+upload-machinery complexity (transfer state, abort, commit/abort races) for
+problems — WAN backpressure, frame limits, progress — most deployments do
+not have. If yours does, chunking belongs in a fork or a future opt-in, not
+in everyone's hot path.
 
 ## Server
 

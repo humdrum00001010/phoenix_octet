@@ -1,20 +1,14 @@
-// PhoenixOctet client: binary ingress over a Phoenix channel with
-// credit-based stop-and-wait flow control.
+// PhoenixOctet client: binary ingress over a Phoenix channel.
 //
-// The transfer protocol frames each upload as begin -> chunks -> commit on an
-// "octet:<sink>" channel. One chunk is in flight at a time: awaiting the
-// server's per-chunk reply is the credit for the next, so consumer
-// backpressure reaches this sender. Reliability and ordering come from the
-// underlying transport; errors and timeouts abort (confirmed via "abort").
+// An upload is ONE binary frame — a length-prefixed id followed by the
+// payload — and the push reply is the acknowledgment. Ordering and
+// reliability are the transport's job; pacing beyond one-reply-per-upload
+// belongs to the caller (`createQueue()` serializes uploads per owner).
 //
-// `createQueue()` provides the serialized executor most apps want around
-// transfers: strictly FIFO per owner, and poisoned if a cancellation cannot
-// be confirmed — so later uploads can never interleave with an undead
-// transfer.
+// Configure your server socket's max_frame_size to fit your uploads: a
+// frame is a whole upload.
 
-export const DEFAULT_CHUNK_BYTES = 1024 * 1024
-
-/** Joins (or reuses) the octet channel for a sink id on a Phoenix Socket. */
+/** Joins the octet channel for a sink id on a connected Phoenix Socket. */
 export function joinOctetChannel(socket, sinkId) {
   return new Promise((resolve, reject) => {
     const chan = socket.channel(`octet:${sinkId}`, {})
@@ -27,86 +21,58 @@ export function joinOctetChannel(socket, sinkId) {
 }
 
 /**
- * Streams `bytes` (Uint8Array/ArrayBuffer/Blob parts already materialized)
- * through the channel. Resolves when the server has committed the binary.
+ * Uploads `bytes` (Uint8Array or ArrayBuffer) under `id` in a single frame.
+ * Resolves with the server reply (`{ bytes }`) once acknowledged.
  */
-export async function transfer(channel, id, bytes, opts = {}) {
-  const chunkBytes = opts.chunkBytes || DEFAULT_CHUNK_BYTES
-  const timeout = opts.timeout || 30000
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
-  await push(channel, "begin", { id, size: u8.byteLength }, timeout)
-  for (let offset = 0; offset < u8.byteLength; offset += chunkBytes) {
-    const end = Math.min(offset + chunkBytes, u8.byteLength)
-    // stop-and-wait: awaiting the reply is the credit for the next chunk
-    await push(channel, "chunk", u8.buffer.slice(u8.byteOffset + offset, u8.byteOffset + end), timeout)
-  }
-  return push(channel, "commit", { id }, timeout)
+export function upload(channel, id, bytes, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    channel
+      .push("upload", encodeFrame(id, bytes), timeout)
+      .receive("ok", resolve)
+      .receive("error", (e) => reject(new Error(`octet upload failed: ${reason(e)}`)))
+      .receive("timeout", () => reject(new Error("octet upload timed out")))
+  })
 }
 
-/** Confirmed, idempotent cancellation of an in-flight transfer. */
-export function abort(channel, id, timeout = 10000) {
-  return push(channel, "abort", { id }, timeout)
+/** The frame layout: <<id byte length::8, id utf8, payload>>. */
+export function encodeFrame(id, bytes) {
+  const idBytes = new TextEncoder().encode(id)
+  if (idBytes.byteLength === 0 || idBytes.byteLength > 255) {
+    throw new Error("octet upload id must encode to 1..255 bytes")
+  }
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  const frame = new Uint8Array(1 + idBytes.byteLength + u8.byteLength)
+  frame[0] = idBytes.byteLength
+  frame.set(idBytes, 1)
+  frame.set(u8, 1 + idBytes.byteLength)
+  return frame.buffer
 }
 
 /**
  * A serialized upload executor: `enqueue(owner, task)` runs tasks strictly
- * FIFO per owner. A task rejection carrying `cancellationUnconfirmed = true`
- * poisons the owner's queue; subsequent tasks reject immediately.
+ * FIFO per owner. One upload in flight at a time is the flow control most
+ * apps need on a reliable local transport.
  */
 export function createQueue() {
   const queues = new WeakMap()
 
   return function enqueue(owner, task) {
     let state = queues.get(owner)
-    if (state && state.poisoned) return Promise.reject(poisonedError(state))
     if (!state) {
-      state = { tail: Promise.resolve(), poisoned: false, reason: null }
+      state = { tail: Promise.resolve() }
       queues.set(owner, state)
     }
-    const prior = state.tail
-    const run = prior.then(
-      () => task(),
-      () => {
-        if (state.poisoned) throw poisonedError(state)
-        return task()
-      },
-    )
+    const run = state.tail.then(task, task)
     const settled = run.then(
       () => undefined,
-      (error) => {
-        if (error && error.cancellationUnconfirmed) {
-          state.poisoned = true
-          state.reason = error.message
-        }
-        if (state.poisoned) throw poisonedError(state)
-        return undefined
-      },
-    )
-    state.tail = settled
-    settled.then(
-      () => {
-        if (queues.get(owner) === state && state.tail === settled) queues.delete(owner)
-      },
       () => undefined,
     )
+    state.tail = settled
+    settled.then(() => {
+      if (queues.get(owner) === state && state.tail === settled) queues.delete(owner)
+    })
     return run
   }
-}
-
-function poisonedError(state) {
-  const error = new Error(`octet queue blocked: ${state.reason || "cancellation was not confirmed"}`)
-  error.octetQueueBlocked = true
-  return error
-}
-
-function push(channel, event, payload, timeout) {
-  return new Promise((resolve, reject) => {
-    channel
-      .push(event, payload, timeout)
-      .receive("ok", resolve)
-      .receive("error", (e) => reject(new Error(`octet ${event} failed: ${reason(e)}`)))
-      .receive("timeout", () => reject(new Error(`octet ${event} timed out`)))
-  })
 }
 
 function reason(e) {
