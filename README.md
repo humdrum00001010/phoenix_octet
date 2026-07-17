@@ -1,7 +1,7 @@
 # PhoenixOctet
 
-Binary ingress over Phoenix Channels with credit-based flow control — the
-missing piece between raw channels and LiveView uploads.
+Binary ingress over Phoenix Channels — the missing piece between raw
+channels and LiveView uploads, kept as small as the problem actually is.
 
 ## Why
 
@@ -84,7 +84,7 @@ nobody else can.
 
 ```js
 import { Socket } from "phoenix"
-import { joinOctetChannel, transfer, abort, createQueue } from "phoenix_octet"
+import { joinOctetChannel, upload, createQueue } from "phoenix_octet"
 
 const socket = new Socket("/octet")
 socket.connect()
@@ -93,14 +93,13 @@ const enqueue = createQueue()
 async function uploadBytes(owner, sinkId, id, u8) {
   return enqueue(owner, async () => {
     const channel = await joinOctetChannel(socket, sinkId)
-    await transfer(channel, id, u8) // stop-and-wait chunking inside
+    await upload(channel, id, u8) // one frame; the reply is the ack
   })
 }
 ```
 
-`createQueue()` serializes uploads per owner and poisons the queue when a
-cancellation cannot be confirmed (reject with `cancellationUnconfirmed =
-true`), so later uploads can never interleave with an undead transfer.
+`createQueue()` runs uploads strictly FIFO per owner — one in flight at a
+time is the flow control most apps need on a reliable local transport.
 
 One sharp edge worth knowing when your bytes come from WASM: fetch/WebSocket
 payloads must not alias shared or growable WASM memory — copy first
