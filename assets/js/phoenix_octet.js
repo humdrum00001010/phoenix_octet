@@ -8,15 +8,69 @@
 // Configure your server socket's max_frame_size to fit your uploads: a
 // frame is a whole upload.
 
-/** Joins the octet channel for a sink id on a connected Phoenix Socket. */
+/**
+ * Joins the octet channel for a sink id once the Phoenix Socket is open.
+ *
+ * `Socket.connect()` starts a connection asynchronously. Calling
+ * `Channel.join()` before that connection opens starts Phoenix's join timeout
+ * while the join is only buffered locally. Waiting for `onOpen` keeps that
+ * timeout scoped to the server join itself, including while the Socket is
+ * reconnecting after a server restart.
+ */
 export function joinOctetChannel(socket, sinkId) {
   return new Promise((resolve, reject) => {
-    const chan = socket.channel(`octet:${sinkId}`, {})
-    chan
-      .join()
-      .receive("ok", () => resolve(chan))
-      .receive("error", (e) => reject(new Error(`octet join failed: ${reason(e)}`)))
-      .receive("timeout", () => reject(new Error("octet join timed out")))
+    let openRef = null
+    let joining = false
+
+    const removeOpenListener = () => {
+      if (openRef === null) return
+      socket.off([openRef])
+      openRef = null
+    }
+
+    const join = () => {
+      if (joining) return
+      joining = true
+      removeOpenListener()
+
+      const chan = socket.channel(`octet:${sinkId}`, {})
+      let settled = false
+
+      const resolveJoin = () => {
+        if (settled) return
+        settled = true
+        resolve(chan)
+      }
+
+      const rejectJoin = (error) => {
+        if (settled) return
+        settled = true
+        try {
+          chan.leave()
+        } catch (_) {
+          // Preserve the join failure. The channel is already unusable to the
+          // caller, and Phoenix may throw if transport teardown won the race.
+        }
+        reject(error)
+      }
+
+      chan
+        .join()
+        .receive("ok", resolveJoin)
+        .receive("error", (e) => rejectJoin(new Error(`octet join failed: ${reason(e)}`)))
+        .receive("timeout", () => rejectJoin(new Error("octet join timed out")))
+    }
+
+    if (socket.isConnected()) {
+      join()
+    } else {
+      openRef = socket.onOpen(join)
+
+      // Do not miss an open transition between the first state check and
+      // registering the callback.
+      if (joining) removeOpenListener()
+      else if (socket.isConnected()) join()
+    }
   })
 }
 

@@ -5,5 +5,8 @@
   "license": "MIT",
   "type": "module",
   "main": "./assets/js/phoenix_octet.js",
-  "module": "./assets/js/phoenix_octet.js"
+  "module": "./assets/js/phoenix_octet.js",
+  "scripts": {
+    "test": "node --test assets/js/phoenix_octet.test.js"
+  }
 }

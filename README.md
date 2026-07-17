@@ -98,6 +98,10 @@ async function uploadBytes(owner, sinkId, id, u8) {
 }
 ```
 
+`joinOctetChannel` waits for the socket to open before starting Phoenix's
+channel-join timeout. It is therefore safe to call immediately after
+`socket.connect()` and while the socket is reconnecting after a server restart.
+
 `createQueue()` runs uploads strictly FIFO per owner — one in flight at a
 time is the flow control most apps need on a reliable local transport.
 
