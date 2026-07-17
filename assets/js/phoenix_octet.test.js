@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { joinOctetChannel, upload } from "./phoenix_octet.js"
+import { cancel, joinOctetChannel, upload } from "./phoenix_octet.js"
 
 class FakeJoinPush {
   hooks = new Map()
@@ -208,3 +208,76 @@ test("uploads one binary frame and resolves with the server byte reply", async (
   push.trigger("ok", { bytes: bytes.byteLength })
   assert.deepEqual(await uploaded, { bytes: 3 })
 })
+
+for (const failure of [
+  {
+    name: "upload error",
+    id: "upload-error",
+    event: "upload",
+    timeout: 4101,
+    status: "error",
+    reply: { reason: "upload denied" },
+    message: "octet upload failed: upload denied",
+    invoke: (channel) => upload(channel, "upload-error", new Uint8Array([1, 2]), 4101),
+  },
+  {
+    name: "upload timeout",
+    id: "upload-timeout",
+    event: "upload",
+    timeout: 4102,
+    status: "timeout",
+    reply: {},
+    message: "octet upload timed out",
+    invoke: (channel) => upload(channel, "upload-timeout", new Uint8Array([3, 4]), 4102),
+  },
+  {
+    name: "cancel error",
+    id: "cancel-error",
+    event: "cancel",
+    timeout: 5101,
+    status: "error",
+    reply: { reason: "cancel denied" },
+    message: "octet cancel failed: cancel denied",
+    invoke: (channel) => cancel(channel, "cancel-error", 5101),
+  },
+  {
+    name: "cancel timeout",
+    id: "cancel-timeout",
+    event: "cancel",
+    timeout: 5102,
+    status: "timeout",
+    reply: {},
+    message: "octet cancel timed out",
+    invoke: (channel) => cancel(channel, "cancel-timeout", 5102),
+  },
+]) {
+  test(`reports the exact ${failure.name} and forwards its deadline`, async () => {
+    const push = new FakeJoinPush()
+    const calls = []
+    const channel = {
+      push(event, payload, timeout) {
+        calls.push({ event, payload, timeout })
+        return push
+      },
+    }
+
+    const pending = failure.invoke(channel)
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].event, failure.event)
+    assert.equal(calls[0].timeout, failure.timeout)
+
+    if (failure.event === "cancel") {
+      assert.deepEqual(calls[0].payload, { id: failure.id })
+    } else {
+      assert.ok(calls[0].payload instanceof ArrayBuffer)
+    }
+
+    push.trigger(failure.status, failure.reply)
+
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, failure.message)
+      return true
+    })
+  })
+}
