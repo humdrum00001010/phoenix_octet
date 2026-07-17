@@ -34,6 +34,21 @@ export function upload(channel, id, bytes, timeout = 30000) {
   })
 }
 
+/**
+ * Pushes a stateless cancellation for `id`. Ordered after any upload pushed
+ * on the same channel before it, so server-side delivery of the cancel
+ * follows delivery of the upload it chases.
+ */
+export function cancel(channel, id, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    channel
+      .push("cancel", { id }, timeout)
+      .receive("ok", resolve)
+      .receive("error", (e) => reject(new Error(`octet cancel failed: ${reason(e)}`)))
+      .receive("timeout", () => reject(new Error("octet cancel timed out")))
+  })
+}
+
 /** The frame layout: <<id byte length::8, id utf8, payload>>. */
 export function encodeFrame(id, bytes) {
   const idBytes = new TextEncoder().encode(id)

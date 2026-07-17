@@ -42,6 +42,14 @@ defmodule PhoenixOctet.Protocol do
     end
   end
 
+  # Stateless cancellation relay: nothing to clear (an upload is atomic), but
+  # same-channel ordering means this runs after any upload pushed before it,
+  # so the callback's delivery is ordered after that upload's delivery.
+  def handle_in(channel, _opts, "cancel", %{"id" => id}, socket) when is_binary(id) do
+    :ok = channel.handle_octet_cancelled(socket.assigns.octet_sink_id, id, socket)
+    {:reply, :ok, socket}
+  end
+
   def handle_in(_channel, _opts, _event, _payload, socket) do
     {:reply, {:error, %{reason: "unknown octet event"}}, socket}
   end

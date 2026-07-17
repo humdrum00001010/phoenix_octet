@@ -46,6 +46,18 @@ defmodule PhoenixOctet.ChannelTest do
     assert {:error, %{reason: "invalid_sink"}} = subscribe_and_join(socket, "octet:", %{})
   end
 
+  test "cancel is ordered after an upload pushed before it", %{socket: socket} do
+    bytes = :crypto.strong_rand_bytes(8)
+
+    ref = push(socket, "upload", {:binary, Protocol.encode_frame("chased", bytes)})
+    assert_reply ref, :ok
+    ref = push(socket, "cancel", %{"id" => "chased"})
+    assert_reply ref, :ok
+
+    assert_receive {:octet_upload, "chased", ^bytes}
+    assert_receive {:octet_cancelled, "chased"}
+  end
+
   test "frame codec round-trips" do
     assert {:ok, "id", "payload"} = Protocol.decode_frame(Protocol.encode_frame("id", "payload"))
     assert :error = Protocol.decode_frame(<<0, "no-id">>)

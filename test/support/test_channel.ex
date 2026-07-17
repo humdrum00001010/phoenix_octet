@@ -10,6 +10,15 @@ defmodule PhoenixOctet.TestChannel do
       {:octet_upload, id, bytes}
     )
   end
+
+  @impl PhoenixOctet.Channel
+  def handle_octet_cancelled(sink_id, id, _socket) do
+    Phoenix.PubSub.broadcast(
+      PhoenixOctet.TestPubSub,
+      "octet_test:" <> sink_id,
+      {:octet_cancelled, id}
+    )
+  end
 end
 
 defmodule PhoenixOctet.TestSocket do
