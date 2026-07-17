@@ -1,0 +1,9 @@
+{
+  "name": "phoenix_octet",
+  "version": "0.1.0",
+  "description": "Binary ingress over Phoenix Channels with credit-based flow control",
+  "license": "MIT",
+  "type": "module",
+  "main": "./assets/js/phoenix_octet.js",
+  "module": "./assets/js/phoenix_octet.js"
+}
