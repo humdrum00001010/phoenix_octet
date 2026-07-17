@@ -64,7 +64,20 @@ defmodule PhoenixOctet.Channel do
               socket :: Phoenix.Socket.t()
             ) :: :ok | {:error, term()}
 
-  @optional_callbacks authorize_join: 3
+  @doc """
+  Invoked for every `"abort"`, after the in-flight transfer (if any) is
+  forgotten. Because it runs in the channel process, anything it publishes is
+  ordered AFTER a commit that raced just ahead of the abort — deliver a
+  terminal cancellation here (see `PhoenixOctet.Sink.deliver_cancel/3`) so
+  receivers can drop an already-delivered binary instead of stranding it.
+  """
+  @callback handle_octet_cancelled(
+              sink_id :: String.t(),
+              id :: String.t(),
+              socket :: Phoenix.Socket.t()
+            ) :: :ok
+
+  @optional_callbacks authorize_join: 3, handle_octet_cancelled: 3
 
   defmacro __using__(opts) do
     quote do
@@ -93,7 +106,10 @@ defmodule PhoenixOctet.Channel do
       def authorize_join(sink_id, _params, _socket) when byte_size(sink_id) > 0, do: :ok
       def authorize_join(_sink_id, _params, _socket), do: {:error, :invalid_sink}
 
-      defoverridable authorize_join: 3
+      @impl PhoenixOctet.Channel
+      def handle_octet_cancelled(_sink_id, _id, _socket), do: :ok
+
+      defoverridable authorize_join: 3, handle_octet_cancelled: 3
     end
   end
 end

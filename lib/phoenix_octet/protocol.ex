@@ -52,12 +52,18 @@ defmodule PhoenixOctet.Protocol do
 
   # Confirmed cancellation. Deliberately idempotent — "nothing in flight" is
   # also a confirmed state, so a client deadline miss can never be left
-  # unconfirmable by a benign race.
-  def handle_in(_channel, _opts, "abort", %{"id" => id}, socket) do
-    case socket.assigns.octet.upload do
-      %{id: ^id} -> {:reply, :ok, put_upload(socket, nil)}
-      _other -> {:reply, :ok, socket}
-    end
+  # unconfirmable by a benign race. The cancellation callback runs from this
+  # same channel process, so whatever it publishes is ordered after a commit
+  # that won the race just ahead of the abort.
+  def handle_in(channel, _opts, "abort", %{"id" => id}, socket) do
+    socket =
+      case socket.assigns.octet.upload do
+        %{id: ^id} -> put_upload(socket, nil)
+        _other -> socket
+      end
+
+    :ok = channel.handle_octet_cancelled(socket.assigns.octet.sink_id, id, socket)
+    {:reply, :ok, socket}
   end
 
   def handle_in(channel, _opts, "commit", %{"id" => id}, socket) do

@@ -43,6 +43,18 @@ defmodule PhoenixOctet.Sink do
     Phoenix.PubSub.broadcast(pubsub, topic(sink_id), {:octet_upload, id, bytes})
   end
 
+  @doc """
+  Delivers a terminal cancellation for an upload id.
+
+  Call from `handle_octet_cancelled/3`: running in the channel process orders
+  this after any `deliver/4` for the same id, so a receiver that already
+  stashed the binary can drop it — a commit-abort race never strands bytes.
+  Arrives as `{:octet_cancelled, id}`.
+  """
+  def deliver_cancel(pubsub, sink_id, id) when is_binary(sink_id) and is_binary(id) do
+    Phoenix.PubSub.broadcast(pubsub, topic(sink_id), {:octet_cancelled, id})
+  end
+
   @doc "The PubSub topic for a sink id."
   def topic(sink_id), do: "octet_sink:" <> sink_id
 

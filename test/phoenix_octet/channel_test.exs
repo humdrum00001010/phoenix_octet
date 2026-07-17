@@ -84,6 +84,25 @@ defmodule PhoenixOctet.ChannelTest do
     assert_reply ref, :error, %{reason: "no matching upload"}
   end
 
+  test "abort orders a terminal cancellation after an already committed upload", %{
+    socket: socket
+  } do
+    id = "up-commit-abort-race"
+    bytes = :crypto.strong_rand_bytes(12)
+
+    ref = push(socket, "begin", %{"id" => id, "size" => byte_size(bytes)})
+    assert_reply ref, :ok
+    ref = push(socket, "chunk", {:binary, bytes})
+    assert_reply ref, :ok
+    ref = push(socket, "commit", %{"id" => id})
+    assert_reply ref, :ok, %{bytes: 12}
+    ref = push(socket, "abort", %{"id" => id})
+    assert_reply ref, :ok
+
+    assert_receive {:octet_upload, ^id, ^bytes}
+    assert_receive {:octet_cancelled, ^id}
+  end
+
   test "chunks without a begin and unknown events are refused", %{socket: socket} do
     ref = push(socket, "chunk", {:binary, "stray"})
     assert_reply ref, :error, %{reason: "no upload in progress"}
