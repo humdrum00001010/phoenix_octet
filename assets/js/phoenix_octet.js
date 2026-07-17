@@ -15,12 +15,25 @@
  * `Channel.join()` before that connection opens starts Phoenix's join timeout
  * while the join is only buffered locally. Waiting for `onOpen` keeps that
  * timeout scoped to the server join itself, including while the Socket is
- * reconnecting after a server restart.
+ * reconnecting after a server restart. The separate socket-open wait is
+ * bounded because Phoenix's channel-join timeout does not start until
+ * `Channel.join()` is called.
+ *
+ * Pass `{ openTimeout, signal }` to customize that wait. `openTimeout`
+ * defaults to 10 seconds; `signal` can abort while the socket is still
+ * unopened. Once channel joining starts, Phoenix owns that phase's timeout.
  */
-export function joinOctetChannel(socket, sinkId) {
+export function joinOctetChannel(socket, sinkId, options = {}) {
+  const { openTimeout = 10000, signal } = options
+  if (!Number.isFinite(openTimeout) || openTimeout < 0) {
+    throw new TypeError("octet socket open timeout must be a finite non-negative number")
+  }
+
   return new Promise((resolve, reject) => {
     let openRef = null
+    let openTimer = null
     let joining = false
+    let settled = false
 
     const removeOpenListener = () => {
       if (openRef === null) return
@@ -28,13 +41,32 @@ export function joinOctetChannel(socket, sinkId) {
       openRef = null
     }
 
-    const join = () => {
-      if (joining) return
-      joining = true
+    const abortOpenWait = () => {
+      rejectOpenWait(abortError(signal))
+    }
+
+    const cleanupOpenWait = () => {
       removeOpenListener()
+      if (openTimer !== null) {
+        clearTimeout(openTimer)
+        openTimer = null
+      }
+      signal?.removeEventListener("abort", abortOpenWait)
+    }
+
+    const rejectOpenWait = (error) => {
+      if (joining || settled) return
+      settled = true
+      cleanupOpenWait()
+      reject(error)
+    }
+
+    const join = () => {
+      if (joining || settled) return
+      joining = true
+      cleanupOpenWait()
 
       const chan = socket.channel(`octet:${sinkId}`, {})
-      let settled = false
 
       const resolveJoin = () => {
         if (settled) return
@@ -64,11 +96,23 @@ export function joinOctetChannel(socket, sinkId) {
     if (socket.isConnected()) {
       join()
     } else {
+      if (signal?.aborted) {
+        rejectOpenWait(abortError(signal))
+        return
+      }
+
+      signal?.addEventListener("abort", abortOpenWait, { once: true })
+      openTimer = setTimeout(
+        () => rejectOpenWait(new Error("octet socket open timed out")),
+        openTimeout,
+      )
       openRef = socket.onOpen(join)
 
       // Do not miss an open transition between the first state check and
-      // registering the callback.
-      if (joining) removeOpenListener()
+      // registering the callback. `onOpen` implementations may also invoke
+      // the callback synchronously, so clean up the returned ref afterward.
+      if (joining || settled) cleanupOpenWait()
+      else if (signal?.aborted) rejectOpenWait(abortError(signal))
       else if (socket.isConnected()) join()
     }
   })
@@ -146,4 +190,11 @@ export function createQueue() {
 
 function reason(e) {
   return String((e && (e.reason || e.message)) || JSON.stringify(e))
+}
+
+function abortError(signal) {
+  const error = new Error("octet socket open aborted")
+  error.name = "AbortError"
+  if (signal?.reason !== undefined) error.cause = signal.reason
+  return error
 }

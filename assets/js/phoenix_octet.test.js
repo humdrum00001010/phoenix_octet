@@ -125,6 +125,42 @@ test("does not miss an open transition while registering its listener", async ()
   assert.equal(await joined, channel)
 })
 
+test("rejects and removes its listener when a socket never opens", async () => {
+  const socket = new FakeSocket()
+  const joined = joinOctetChannel(socket, "sink-never-opens", { openTimeout: 0 })
+
+  assert.equal(socket.channelCalls.length, 0)
+  assert.equal(socket.listeners.size, 1)
+
+  await assert.rejects(joined, /octet socket open timed out/)
+  assert.equal(socket.listeners.size, 0)
+  assert.equal(socket.channelCalls.length, 0)
+
+  socket.open()
+  assert.equal(socket.channelCalls.length, 0)
+})
+
+test("can abort the socket-open wait without creating a channel", async () => {
+  const socket = new FakeSocket()
+  const controller = new AbortController()
+  const joined = joinOctetChannel(socket, "sink-aborted", {
+    openTimeout: 10000,
+    signal: controller.signal,
+  })
+
+  assert.equal(socket.listeners.size, 1)
+  controller.abort("owner stopped")
+
+  await assert.rejects(joined, (error) => {
+    assert.equal(error.name, "AbortError")
+    assert.match(error.message, /octet socket open aborted/)
+    assert.equal(error.cause, "owner stopped")
+    return true
+  })
+  assert.equal(socket.listeners.size, 0)
+  assert.equal(socket.channelCalls.length, 0)
+})
+
 for (const [status, payload, message] of [
   ["timeout", {}, /octet join timed out/],
   ["error", { reason: "denied" }, /octet join failed: denied/],
