@@ -140,6 +140,49 @@ test("rejects and removes its listener when a socket never opens", async () => {
   assert.equal(socket.channelCalls.length, 0)
 })
 
+class ClosedStateSocket extends FakeSocket {
+  state = "closed"
+
+  connectionState() {
+    return this.state
+  }
+}
+
+test("rejects a closed socket after the grace instead of the full open wait", async () => {
+  // A memoizing host handing over a socket with no dial in flight would
+  // otherwise stall for the entire openTimeout on every join.
+  const socket = new ClosedStateSocket()
+  const joined = joinOctetChannel(socket, "sink-closed", {
+    openTimeout: 10000,
+    closedGraceMs: 5,
+  })
+
+  assert.equal(socket.channelCalls.length, 0)
+
+  await assert.rejects(joined, /octet socket closed/)
+  assert.equal(socket.listeners.size, 0)
+  assert.equal(socket.channelCalls.length, 0)
+})
+
+test("a closed socket that starts dialing within the grace keeps the open wait", async () => {
+  const socket = new ClosedStateSocket()
+  const joined = joinOctetChannel(socket, "sink-redial", {
+    openTimeout: 10000,
+    closedGraceMs: 5,
+  })
+
+  socket.state = "connecting"
+  await new Promise((resolve) => setTimeout(resolve, 15))
+
+  assert.equal(socket.listeners.size, 1, "the open wait must survive the grace check")
+
+  socket.state = "open"
+  socket.open()
+  const [{ channel }] = socket.channelCalls
+  channel.joinPush.trigger("ok")
+  assert.equal(await joined, channel)
+})
+
 test("can abort the socket-open wait without creating a channel", async () => {
   const socket = new FakeSocket()
   const controller = new AbortController()

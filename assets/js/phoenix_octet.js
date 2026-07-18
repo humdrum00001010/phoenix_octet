@@ -19,19 +19,34 @@
  * bounded because Phoenix's channel-join timeout does not start until
  * `Channel.join()` is called.
  *
- * Pass `{ openTimeout, signal }` to customize that wait. `openTimeout`
- * defaults to 10 seconds; `signal` can abort while the socket is still
- * unopened. Once channel joining starts, Phoenix owns that phase's timeout.
+ * Pass `{ openTimeout, signal, closedGraceMs }` to customize that wait.
+ * `openTimeout` defaults to 10 seconds; `signal` can abort while the socket
+ * is still unopened. Once channel joining starts, Phoenix owns that phase's
+ * timeout.
+ *
+ * A socket whose `connectionState()` reports `"closed"` has no dial in
+ * flight — waiting the full `openTimeout` on it can only succeed if some
+ * other actor revives the transport, and hosts that memoize sockets turn
+ * that wait into a constant full-deadline stall on every join. If the socket
+ * still reports `"closed"` after `closedGraceMs` (default 1 second — long
+ * enough for a reconnect backoff to flip it back to `"connecting"`), the
+ * join rejects early with `octet socket closed` so the caller can dial a
+ * fresh socket. A socket without `connectionState` keeps the plain
+ * `openTimeout` wait.
  */
 export function joinOctetChannel(socket, sinkId, options = {}) {
-  const { openTimeout = 10000, signal } = options
+  const { openTimeout = 10000, signal, closedGraceMs = 1000 } = options
   if (!Number.isFinite(openTimeout) || openTimeout < 0) {
     throw new TypeError("octet socket open timeout must be a finite non-negative number")
+  }
+  if (!Number.isFinite(closedGraceMs) || closedGraceMs < 0) {
+    throw new TypeError("octet socket closed grace must be a finite non-negative number")
   }
 
   return new Promise((resolve, reject) => {
     let openRef = null
     let openTimer = null
+    let closedGraceTimer = null
     let joining = false
     let settled = false
 
@@ -50,6 +65,10 @@ export function joinOctetChannel(socket, sinkId, options = {}) {
       if (openTimer !== null) {
         clearTimeout(openTimer)
         openTimer = null
+      }
+      if (closedGraceTimer !== null) {
+        clearTimeout(closedGraceTimer)
+        closedGraceTimer = null
       }
       signal?.removeEventListener("abort", abortOpenWait)
     }
@@ -114,6 +133,21 @@ export function joinOctetChannel(socket, sinkId, options = {}) {
       if (joining || settled) cleanupOpenWait()
       else if (signal?.aborted) rejectOpenWait(abortError(signal))
       else if (socket.isConnected()) join()
+      else if (
+        typeof socket.connectionState === "function" &&
+        socket.connectionState() === "closed" &&
+        closedGraceMs < openTimeout
+      ) {
+        closedGraceTimer = setTimeout(() => {
+          closedGraceTimer = null
+          if (joining || settled) return
+          if (socket.connectionState() === "closed") {
+            rejectOpenWait(new Error("octet socket closed"))
+          }
+          // "connecting"/"closing": a dial is in flight again; the open
+          // wait's own timeout keeps governing.
+        }, closedGraceMs)
+      }
     }
   })
 }
