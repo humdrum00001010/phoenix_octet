@@ -2,8 +2,9 @@
 //
 // An upload is ONE binary frame — a length-prefixed id followed by the
 // payload — and the push reply is the acknowledgment. Ordering and
-// reliability are the transport's job; pacing beyond one-reply-per-upload
-// belongs to the caller (`createQueue()` serializes uploads per owner).
+// reliability are the transport's job: pushes on one channel arrive and are
+// processed in push order, so concurrent uploads need no client-side
+// pacing on the reliable local transports this targets.
 //
 // Configure your server socket's max_frame_size to fit your uploads: a
 // frame is a whole upload.
@@ -193,33 +194,6 @@ export function encodeFrame(id, bytes) {
   frame.set(idBytes, 1)
   frame.set(u8, 1 + idBytes.byteLength)
   return frame.buffer
-}
-
-/**
- * A serialized upload executor: `enqueue(owner, task)` runs tasks strictly
- * FIFO per owner. One upload in flight at a time is the flow control most
- * apps need on a reliable local transport.
- */
-export function createQueue() {
-  const queues = new WeakMap()
-
-  return function enqueue(owner, task) {
-    let state = queues.get(owner)
-    if (!state) {
-      state = { tail: Promise.resolve() }
-      queues.set(owner, state)
-    }
-    const run = state.tail.then(task, task)
-    const settled = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    state.tail = settled
-    settled.then(() => {
-      if (queues.get(owner) === state && state.tail === settled) queues.delete(owner)
-    })
-    return run
-  }
 }
 
 function reason(e) {

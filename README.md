@@ -21,9 +21,11 @@ custom channels. This library is that custom channel, written once:
   by the payload. The push reply is the acknowledgment; an upload either
   fully happens or fully doesn't, so there is no transfer state and nothing
   to abort.
-* **Flow control**: one reply per upload; serialize uploads with
-  `createQueue()` for strictly-FIFO-per-owner pacing. Ordering and
-  reliability stay where they belong: the transport.
+* **No flow control**: one reply per upload is the whole pacing story.
+  Uploads may be pushed concurrently — the channel processes frames in push
+  order, and on the reliable local transports this targets, client-side
+  pacing buys nothing. Ordering and reliability stay where they belong: the
+  transport.
 * **Size enforcement**: checked server-side against `:max_upload_bytes`;
   set your socket's `max_frame_size` to match, since a frame is a whole
   upload.
@@ -32,11 +34,12 @@ custom channels. This library is that custom channel, written once:
   files, no sweeper.
 
 Earlier versions carried a chunked begin/commit protocol with per-chunk
-credit acknowledgments; on a reliable ordered transport that reintroduced
-upload-machinery complexity (transfer state, abort, commit/abort races) for
-problems — WAN backpressure, frame limits, progress — most deployments do
-not have. If yours does, chunking belongs in a fork or a future opt-in, not
-in everyone's hot path.
+credit acknowledgments, and later a client-side FIFO queue helper
+(`createQueue()`); on a reliable ordered transport both reintroduced
+upload-machinery complexity (transfer state, abort, commit/abort races,
+serialized latency) for problems — WAN backpressure, frame limits,
+progress — most deployments do not have. If yours does, chunking belongs in
+a fork or a future opt-in, not in everyone's hot path.
 
 ## Server
 
@@ -84,17 +87,14 @@ nobody else can.
 
 ```js
 import { Socket } from "phoenix"
-import { joinOctetChannel, upload, createQueue } from "phoenix_octet"
+import { joinOctetChannel, upload } from "phoenix_octet"
 
 const socket = new Socket("/octet")
 socket.connect()
-const enqueue = createQueue()
 
-async function uploadBytes(owner, sinkId, id, u8) {
-  return enqueue(owner, async () => {
-    const channel = await joinOctetChannel(socket, sinkId)
-    await upload(channel, id, u8) // one frame; the reply is the ack
-  })
+async function uploadBytes(sinkId, id, u8) {
+  const channel = await joinOctetChannel(socket, sinkId)
+  return upload(channel, id, u8) // one frame; the reply is the ack
 }
 ```
 
@@ -105,9 +105,6 @@ It is therefore safe to call immediately after `socket.connect()` and while the
 socket is reconnecting after a server restart. Pass
 `{ openTimeout: milliseconds, signal }` as the optional third argument to use a
 different finite deadline or abort the pre-open wait with an `AbortSignal`.
-
-`createQueue()` runs uploads strictly FIFO per owner — one in flight at a
-time is the flow control most apps need on a reliable local transport.
 
 One sharp edge worth knowing when your bytes come from WASM: fetch/WebSocket
 payloads must not alias shared or growable WASM memory — copy first

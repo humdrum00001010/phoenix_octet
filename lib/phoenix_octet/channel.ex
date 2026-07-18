@@ -8,8 +8,9 @@ defmodule PhoenixOctet.Channel do
   is the missing piece between them, kept as small as the problem actually
   is: an upload is **one binary frame** (length-prefixed id + payload), and
   the push reply is the acknowledgment. Ordering and reliability are the
-  transport's job; pacing beyond one-reply-per-upload belongs to the caller
-  (the JS client's queue serializes uploads per owner).
+  transport's job: pushes on one channel are processed in push order, so
+  concurrent uploads need no client-side pacing on the reliable local
+  transports this targets.
 
   Size is enforced against `:max_upload_bytes` (default 256 MiB). Configure
   your socket's `max_frame_size` to match — a frame is a whole upload.
